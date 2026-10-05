@@ -1,130 +1,104 @@
-# fleet-template-v1
+# Vue (JavaScript) template
 
-## What This Template Is
+Provisioned from [`Qode-Fleet-Control/fleet-template-v1`](https://github.com/Qode-Fleet-Control/fleet-template-v1) — the fleet
+lifecycle contract (`bin/`, `fleet.conf`, deploy workflows, `compose.yaml`) with a Vue 3 single-page app in plain JavaScript (Vue Router, Pinia, ESLint + Oxlint), built with Vite laid on top.
 
-`fleet-template-v1` is a **language-agnostic app lifecycle harness** for apps
-managed by the fleet platform. It gives any app — Node, Python, Go, a Docker
-Compose stack, anything — a uniform way to be deployed and controlled, without
-the fleet needing to know a single thing about your stack.
+Listens on `0.0.0.0:$PORT` (default `3000`) and serves at the root (`/`) of its own hostname
+(`https://<hash>.<FLEET_APP_DOMAIN>/`); the health check hits `/`. In the container: the static build (`dist/`) behind nginx.
 
-The fleet injects runtime variables into the environment (`PORT`, `BASE_PATH`,
-`DATABASE_URL`) and calls `./bin/run` to deploy. Everything project-specific —
-how to install, build, and start your app — lives in **one file: `fleet.conf`**.
-That is the only file you edit per project.
+## Origin
 
-## Repository Structure
+    npx create-vue@latest --router --pinia --eslint qode-vue-js-template-v1
 
-```
-fleet.conf        ← the only file you edit per project
-.env              ← local-only env vars (gitignored)
-bin/
-  _common.sh      ← shared logic; never edit this
-  run             ← install + build + start (called by the fleet)
-  start           ← start only (no rebuild)
-  restart         ← stop + full run
-  reload          ← hot-reload config without rebuild
-  stop            ← stop the running process
-```
+Generated 2026-10-05 with create-vue 3.24.0 (host Node v22.12.0 / npm 10.9.0).
 
-## The One File You Edit: `fleet.conf`
+## Run it
 
-`fleet.conf` is sourced as shell by the lifecycle scripts. Fill in the commands
-for your stack; leave any command empty (`''`) to skip that step.
+### On the fleet
 
-```sh
-NAME="my-app"           # label shown in fleet logs
-PORT="3000"             # default port (fleet overrides via $PORT env var)
-HEALTH_PATH="/"         # HTTP path that returns 200 when the app is ready
+The fleet clones the repo, injects `PORT` (and the workspace's `DATABASE_URL`, `REDIS_URL`, ...) and runs
+`bin/run`, which uses the docker runtime from `fleet.conf`: `docker compose build`, then `docker compose up --remove-orphans` in the foreground.
 
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/server.js'   # must listen on $PORT; run in foreground
-RELOAD_CMD=''           # optional; empty → falls back to stop+start
-```
+### With docker
 
-> **Critical rule:** single-quote any command that uses `$PORT` or
-> `$BASE_PATH`. Single quotes defer variable expansion to **runtime** — when the
-> command actually runs, with the fleet-injected value — rather than at the
-> moment `fleet.conf` is sourced (when those values aren't set yet). Use
-> `START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'`, never double quotes.
+    PORT=3000 bin/run                  # what the fleet does
+    docker compose up --build        # or plain compose
 
-## How the Lifecycle Works
+### Without docker
 
-| Script | What it does | When to use |
-| --- | --- | --- |
-| `bin/run` | `INSTALL_CMD` → `BUILD_CMD` → `START_CMD` | Fleet deploy, fresh start |
-| `bin/start` | `START_CMD` only | Restart without rebuild |
-| `bin/restart` | stop + `bin/run` | After a code/dep change |
-| `bin/reload` | `RELOAD_CMD`, or stop+start if empty | After a config-only change |
-| `bin/stop` | Kill by pidfile or port | Tear down |
+`FLEET_RUNTIME=process bin/run` runs the plain commands from `fleet.conf`:
 
-> The process PID is written to `.fleet/app.pid` so subsequent `stop`/`restart`
-> calls can find and terminate it reliably. If the pidfile is missing or stale,
-> `stop` falls back to freeing whatever is listening on `$PORT`.
+| step | command |
+|---|---|
+| install | `npm install` |
+| build | `npm run build` |
+| start | `npx vite preview --host 0.0.0.0 --port $PORT` |
 
-## How to Apply This to Your Project
+    ./bin/run       # install, build, start in the foreground
+    ./bin/start     # start from existing build artifacts
+    ./bin/restart   # rebuild and restart
+    ./bin/stop      # stop whatever holds the port
 
-### Step 1 — Copy the template into your repo
+See `docs/fleet-lifecycle.md` for the full contract.
 
-```sh
-cp -r fleet-template-v1/* my-project/
-```
+## Deviations from the generator output
 
-Or, if starting fresh, just clone it and work from `main`.
+- No `--ts` flag, so the generator emits JavaScript (`--default` alone now produces TypeScript).
+- `vite.config.js` sets `server.allowedHosts` / `preview.allowedHosts` from `FLEET_APP_HOST` (any host when unset): Vite otherwise answers the fleet hostname with "Blocked request" in `vite dev` / `vite preview`.
+- `package-lock.json` added (`npm install --package-lock-only`) so the image build can use `npm ci`.
+- Added the fleet files: `bin/` (lifecycle scripts), `fleet.conf`, `Dockerfile`, `compose.yaml`, `.dockerignore`, `.env.example`, `.github/workflows/`, `docs/fleet-lifecycle.md`; fleet entries (`.fleet/`, `*.log`, ...) prepended to `.gitignore`.
 
-### Step 2 — Edit `fleet.conf` (the only required change)
+## Verified
 
-Fill in your stack's commands. Per-stack examples:
+Verified 2026-10-05 against the fleet's docker runtime, on docker 29.8:
 
-```sh
-# Node.js
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/index.js'
+- `migrate.py audit` (the coordinator's own refusal checks): **READY**.
+- `verify.sh <repo> 46012` — `bin/run` in the background, probe `HEALTH_PATH`, `bin/restart`, probe again,
+  `bin/stop`: `run=200 restart=200 containers_after_stop=0`. Locally the image was built with `npm ci` from the committed lockfile.
 
-# Python (Gunicorn)
-INSTALL_CMD='pip install -r requirements.txt'
-BUILD_CMD=''
-START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'
+---
 
-# Go
-INSTALL_CMD=''
-BUILD_CMD='go build -o ./out/server ./cmd/server'
-START_CMD='./out/server'
+# qode-vue-js-template-v1
 
-# Docker Compose
-INSTALL_CMD=''
-BUILD_CMD='docker compose build'
-START_CMD='docker compose up'
-RELOAD_CMD='docker compose up -d --no-build'
-```
+This template should help get you started developing with Vue 3 in Vite.
 
-### Step 3 — Set local env vars in `.env` (gitignored)
+## Recommended IDE Setup
+
+[VS Code](https://code.visualstudio.com/) + [Vue (Official)](https://marketplace.visualstudio.com/items?itemName=Vue.volar) (and disable Vetur).
+
+## Recommended Browser Setup
+
+- Chromium-based browsers (Chrome, Edge, Brave, etc.):
+  - [Vue.js devtools](https://chromewebstore.google.com/detail/vuejs-devtools/nhdogjmejiglipccpnnnanhbledajbpd)
+  - [Turn on Custom Object Formatter in Chrome DevTools](http://bit.ly/object-formatters)
+- Firefox:
+  - [Vue.js devtools](https://addons.mozilla.org/en-US/firefox/addon/vue-js-devtools/)
+  - [Turn on Custom Object Formatter in Firefox DevTools](https://fxdx.dev/firefox-devtools-custom-object-formatters/)
+
+## Customize configuration
+
+See [Vite Configuration Reference](https://vite.dev/config/).
+
+## Project Setup
 
 ```sh
-APP_NAME=My App
-DATABASE_URL=postgres://localhost/mydb
+npm install
 ```
 
-### Step 4 — Verify standalone
+### Compile and Hot-Reload for Development
 
 ```sh
-PORT=3001 bin/run      # should install, build, and serve on 3001
-curl http://localhost:3001/   # should 200
+npm run dev
 ```
 
-### Step 5 — Connect to the fleet
+### Compile and Minify for Production
 
-Point the fleet at your repo. It will clone it, inject `PORT` / `BASE_PATH` /
-`DATABASE_URL`, and call `bin/run`. As long as your `START_CMD` listens on
-`$PORT` and `HEALTH_PATH` returns 200, the fleet will mark the app healthy.
+```sh
+npm run build
+```
 
-## Key Invariants
+### Lint with [ESLint](https://eslint.org/)
 
-- **`START_CMD` must run in the foreground and listen on `$PORT`.** Do not use a
-  dev server — HMR / hot-reload chunks 404 behind the ingress and will break the
-  app.
-- **Never put secrets in `fleet.conf`** — it's committed. Use `.env` locally;
-  the fleet injects secrets via the environment.
-- **`bin/_common.sh` is shared infrastructure** — don't edit it per project. All
-  project-specific configuration belongs in `fleet.conf`.
+```sh
+npm run lint
+```
